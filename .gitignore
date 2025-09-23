@@ -51,7 +51,6 @@ wiki/
 
 # Build output
 build/
-dist/
 
 # Logs
 *.log
