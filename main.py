@@ -232,23 +232,44 @@ class RedmineWikiDownloader:
             return {}, (self.username.get(), self.password.get())
 
     def fetch_projects(self) -> List[Dict]:
-        """Fetch project list"""
+        """Fetch all projects using pagination"""
         params, auth = self.get_auth_params()
         url = f"{self.redmine_url.get()}/projects.xml"
-        params["limit"] = 100
 
-        response = requests.get(url, params=params, auth=auth)
-        response.raise_for_status()
+        all_projects = []
+        offset = 0
+        limit = 100
 
-        root = ET.fromstring(response.content)
-        projects = []
+        while True:
+            params["limit"] = limit
+            params["offset"] = offset
 
-        for project in root.findall('project'):
-            name = project.find('name').text
-            identifier = project.find('identifier').text
-            projects.append({'name': name, 'identifier': identifier})
+            response = requests.get(url, params=params, auth=auth)
+            response.raise_for_status()
 
-        return projects
+            root = ET.fromstring(response.content)
+
+            # Get pagination info
+            total_count = int(root.get('total_count', 0))
+            current_limit = int(root.get('limit', limit))
+            current_offset = int(root.get('offset', offset))
+
+            # Extract projects from current page
+            projects_in_page = []
+            for project in root.findall('project'):
+                name = project.find('name').text
+                identifier = project.find('identifier').text
+                projects_in_page.append({'name': name, 'identifier': identifier})
+
+            all_projects.extend(projects_in_page)
+
+            # Check if we have more pages
+            if current_offset + current_limit >= total_count or len(projects_in_page) == 0:
+                break
+
+            offset += limit
+
+        return all_projects
 
     def show_project_selection(self):
         """Show project selection screen"""
@@ -491,26 +512,47 @@ class RedmineWikiDownloader:
         self.add_log(f"Project '{project_name}' download completed")
 
     def fetch_wiki_pages_threaded(self, identifier: str) -> List[str]:
-        """Fetch wiki page list executed in thread"""
+        """Fetch all wiki pages using pagination executed in thread"""
         params, auth = self.get_auth_params()
         url = f"{self.redmine_url.get()}/projects/{identifier}/wiki/index.xml"
-        params["limit"] = 100
+
+        all_pages = []
+        offset = 0
+        limit = 100
 
         try:
-            response = requests.get(url, params=params, auth=auth)
-            if response.status_code == 404:
-                return []  # Project without wiki
+            while True:
+                params["limit"] = limit
+                params["offset"] = offset
 
-            response.raise_for_status()
+                response = requests.get(url, params=params, auth=auth)
+                if response.status_code == 404:
+                    return []  # Project without wiki
 
-            root = ET.fromstring(response.content)
-            pages = []
+                response.raise_for_status()
 
-            for page in root.findall('wiki_page'):
-                title = page.find('title').text
-                pages.append(title)
+                root = ET.fromstring(response.content)
 
-            return pages
+                # Get pagination info
+                total_count = int(root.get('total_count', 0))
+                current_limit = int(root.get('limit', limit))
+                current_offset = int(root.get('offset', offset))
+
+                # Extract pages from current page
+                pages_in_page = []
+                for page in root.findall('wiki_page'):
+                    title = page.find('title').text
+                    pages_in_page.append(title)
+
+                all_pages.extend(pages_in_page)
+
+                # Check if we have more pages
+                if current_offset + current_limit >= total_count or len(pages_in_page) == 0:
+                    break
+
+                offset += limit
+
+            return all_pages
         except Exception as e:
             print(f"Failed to fetch wiki page list: {e}")
             return []
@@ -562,23 +604,46 @@ class RedmineWikiDownloader:
             self.download_wiki_page(identifier, page_title, project_dir)
 
     def fetch_wiki_pages(self, identifier: str) -> List[str]:
-        """Fetch wiki page list"""
-        url = f"{self.redmine_url.get()}/projects/{identifier}/wiki/index.xml?key={self.api_key.get()}&limit=100"
-        response = requests.get(url)
+        """Fetch all wiki pages using pagination (deprecated - use threaded version)"""
+        params, auth = self.get_auth_params()
+        url = f"{self.redmine_url.get()}/projects/{identifier}/wiki/index.xml"
 
-        if response.status_code == 404:
-            return []  # Project without wiki
+        all_pages = []
+        offset = 0
+        limit = 100
 
-        response.raise_for_status()
+        while True:
+            params["limit"] = limit
+            params["offset"] = offset
 
-        root = ET.fromstring(response.content)
-        pages = []
+            response = requests.get(url, params=params, auth=auth)
+            if response.status_code == 404:
+                return []  # Project without wiki
 
-        for page in root.findall('wiki_page'):
-            title = page.find('title').text
-            pages.append(title)
+            response.raise_for_status()
 
-        return pages
+            root = ET.fromstring(response.content)
+
+            # Get pagination info
+            total_count = int(root.get('total_count', 0))
+            current_limit = int(root.get('limit', limit))
+            current_offset = int(root.get('offset', offset))
+
+            # Extract pages from current page
+            pages_in_page = []
+            for page in root.findall('wiki_page'):
+                title = page.find('title').text
+                pages_in_page.append(title)
+
+            all_pages.extend(pages_in_page)
+
+            # Check if we have more pages
+            if current_offset + current_limit >= total_count or len(pages_in_page) == 0:
+                break
+
+            offset += limit
+
+        return all_pages
 
     def download_wiki_page(self, identifier: str, title: str, save_dir: str):
         """Download individual wiki page"""
