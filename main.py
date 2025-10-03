@@ -557,6 +557,83 @@ class RedmineWikiDownloader:
             print(f"Failed to fetch wiki page list: {e}")
             return []
 
+    def fetch_attachments(self, identifier: str, wiki_title: str) -> List[Dict]:
+        """Fetch attachments for a wiki page"""
+        try:
+            params, auth = self.get_auth_params()
+            encoded_title = quote(wiki_title, safe='')
+            url = f"{self.redmine_url.get()}/projects/{identifier}/wiki/{encoded_title}.xml"
+
+            # Include attachments in the request
+            params['include'] = 'attachments'
+
+            response = requests.get(url, params=params, auth=auth)
+            response.raise_for_status()
+
+            root = ET.fromstring(response.content)
+            attachments = []
+
+            for attachment in root.findall('.//attachment'):
+                att_id = attachment.find('id').text
+                filename = attachment.find('filename').text
+                content_url = attachment.find('content_url').text
+
+                attachments.append({
+                    'id': att_id,
+                    'filename': filename,
+                    'content_url': content_url
+                })
+
+            return attachments
+
+        except Exception as e:
+            print(f"Failed to fetch attachments for wiki page '{wiki_title}': {e}")
+            return []
+
+    def download_attachment(self, content_url: str, save_path: str) -> bool:
+        """Download a single attachment file"""
+        try:
+            params, auth = self.get_auth_params()
+
+            response = requests.get(content_url, params=params, auth=auth, stream=True)
+            response.raise_for_status()
+
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            return True
+
+        except Exception as e:
+            print(f"Failed to download attachment from '{content_url}': {e}")
+            return False
+
+    def convert_image_links(self, text: str, attachments: List[Dict]) -> str:
+        """Convert Redmine image links to local markdown format"""
+        if not text or not attachments:
+            return text
+
+        # Create a mapping of attachment filenames
+        att_filenames = {att['filename']: att['filename'] for att in attachments}
+
+        # Pattern to match Redmine image syntax: !filename.ext! or !>filename.ext!
+        import re
+
+        def replace_image(match):
+            align = match.group(1) or ''  # Capture alignment (>, <, =)
+            filename = match.group(2)
+
+            # Check if this filename exists in attachments
+            if filename in att_filenames:
+                # Convert to markdown image syntax with relative path
+                return f"![{filename}](./{filename})"
+            return match.group(0)  # Return original if not found
+
+        # Replace Redmine image syntax with markdown
+        text = re.sub(r'!([><\-=])?([^!\s]+)!', replace_image, text)
+
+        return text
+
     def download_wiki_page_threaded(self, identifier: str, title: str, save_dir: str) -> bool:
         """Individual wiki page download executed in thread"""
         try:
@@ -571,13 +648,41 @@ class RedmineWikiDownloader:
             page_title = root.find('title').text
             page_text = root.find('text').text or ""
 
-            # Save as markdown file
-            filename = f"{self.sanitize_filename(page_title)}.md"
-            filepath = os.path.join(save_dir, filename)
+            # Fetch attachments for this wiki page
+            attachments = self.fetch_attachments(identifier, title)
 
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"# {page_title}\n\n")
-                f.write(page_text)
+            # Determine save location based on attachments
+            if attachments:
+                # Create folder with wiki page name
+                wiki_folder_name = self.sanitize_filename(page_title)
+                wiki_folder_path = os.path.join(save_dir, wiki_folder_name)
+                os.makedirs(wiki_folder_path, exist_ok=True)
+
+                # Convert image links to local paths
+                page_text = self.convert_image_links(page_text, attachments)
+
+                # Save markdown file in the folder
+                filename = f"{wiki_folder_name}.md"
+                filepath = os.path.join(wiki_folder_path, filename)
+
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(f"# {page_title}\n\n")
+                    f.write(page_text)
+
+                # Download attachments to the same folder
+                for attachment in attachments:
+                    att_filename = attachment['filename']
+                    att_filepath = os.path.join(wiki_folder_path, att_filename)
+                    self.add_log(f"  Downloading attachment: {att_filename}")
+                    self.download_attachment(attachment['content_url'], att_filepath)
+            else:
+                # No attachments - save markdown file directly
+                filename = f"{self.sanitize_filename(page_title)}.md"
+                filepath = os.path.join(save_dir, filename)
+
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(f"# {page_title}\n\n")
+                    f.write(page_text)
 
             return True
 
